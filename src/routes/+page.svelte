@@ -17,6 +17,134 @@
 	let volume = 0; // 0..100
 	let rafId;
 
+	// === Realtime(WebRTC) 초저지연 ===
+	let isRealtime = false;
+	let pc; // RTCPeerConnection
+	let remoteAudioEl; // 원격 음성 출력
+
+	// 디버그
+	let debugOpen = false;
+	let debugLogs = [];
+	let realtimeError = '';
+
+	// 연결/통계 상태
+	let rtState = { ice: 'new', connection: 'new', signaling: 'stable' };
+	let statsTimerId;
+	let bytesSentTotal = 0;
+	let bytesRecvTotal = 0;
+	let prevBytesSent = 0;
+	let prevBytesRecv = 0;
+	let kbpsUp = 0;
+	let kbpsDown = 0;
+	let realtimeClosedAt = '';
+
+	function logDebug(step, payload) {
+		try {
+			debugLogs = [
+				{ time: new Date().toISOString(), step, message: typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2) },
+				...debugLogs
+			].slice(0, 100);
+		} catch {
+			// noop
+		}
+	}
+
+	async function debugFetch(url, init) {
+		logDebug('fetch:request', { url, ...{ method: init?.method || 'GET' }, headers: init?.headers, body: init?.body instanceof FormData ? 'FormData' : init?.body });
+		const res = await fetch(url, init);
+		const headers = Array.from(res.headers.entries());
+		const text = await res.text();
+		logDebug('fetch:response', { url, status: res.status, ok: res.ok, headers, text: text.slice(0, 2000) });
+		return { ok: res.ok, status: res.status, headers, text };
+	}
+
+	async function startRealtime() {
+		if (isRealtime) return;
+		await ensureMic();
+		realtimeError = '';
+		// 1) PeerConnection 생성 (초저지연에 유리한 기본 설정)
+		pc = new RTCPeerConnection({
+			iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+		});
+		pc.onicecandidate = () => {};
+		pc.ontrack = (e) => {
+			// 모델 음성 출력
+			if (!remoteAudioEl) return;
+			remoteAudioEl.srcObject = e.streams[0];
+			remoteAudioEl.play().catch(() => {});
+		};
+		pc.oniceconnectionstatechange = () => { rtState.ice = pc.iceConnectionState; };
+		pc.onconnectionstatechange = () => { rtState.connection = pc.connectionState; };
+		pc.onsignalingstatechange = () => { rtState.signaling = pc.signalingState; };
+		// 2) 로컬 마이크 트랙 추가
+		mediaStream.getTracks().forEach((t) => pc.addTrack(t, mediaStream));
+		// 3) 수신 전용 트랜시버로 지연 최소화
+		pc.addTransceiver('audio', { direction: 'recvonly' });
+		// 4) SDP offer 생성
+		const offer = await pc.createOffer({ offerToReceiveAudio: true });
+		await pc.setLocalDescription(offer);
+		// 5) 서버에서 ephemeral 토큰 발급
+		const tokenResp = await debugFetch('/api/realtime-token', { method: 'POST' });
+		let tokenData = {};
+		try { tokenData = JSON.parse(tokenResp.text || '{}'); } catch (e) { logDebug('token:parse:error', String(e)); }
+		const ephemeralKey = tokenData.value || tokenData.client_secret || tokenData.token || '';
+		if (!tokenResp.ok || !ephemeralKey) {
+			realtimeError = `토큰 발급 실패(status ${tokenResp.status})`;
+			throw new Error('ephemeral 토큰 발급 실패');
+		}
+		// 6) OpenAI Realtime에 SDP 전송 후 answer 수신
+		const sdpResp = await debugFetch('https://api.openai.com/v1/realtime/calls', {
+			method: 'POST',
+			body: offer.sdp,
+			headers: {
+				Authorization: `Bearer ${ephemeralKey}`,
+				'Content-Type': 'application/sdp'
+			}
+		});
+		const answerSdp = sdpResp.text;
+		await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+		isRealtime = true;
+		bytesSentTotal = 0; bytesRecvTotal = 0; prevBytesSent = 0; prevBytesRecv = 0; kbpsUp = 0; kbpsDown = 0; realtimeClosedAt = '';
+		startStatsPolling();
+	}
+
+	async function stopRealtime() {
+		if (!pc) return;
+		try { pc.getSenders().forEach((s) => { try { s.track && s.track.stop(); } catch {} }); } catch {}
+		try { pc.close(); } catch {}
+		pc = undefined;
+		isRealtime = false;
+		rtState.connection = 'closed';
+		stopStatsPolling();
+		realtimeClosedAt = new Date().toISOString();
+		if (remoteAudioEl) { try { remoteAudioEl.srcObject = null; } catch {} }
+	}
+
+	function startStatsPolling() {
+		stopStatsPolling();
+		statsTimerId = setInterval(async () => {
+			if (!pc) return;
+			try {
+				const report = await pc.getStats();
+				let sent = 0, recv = 0;
+				report.forEach((s) => {
+					if (s.type === 'outbound-rtp' && s.kind === 'audio') sent += s.bytesSent || 0;
+					if (s.type === 'inbound-rtp' && s.kind === 'audio') recv += s.bytesReceived || 0;
+				});
+				bytesSentTotal = sent; bytesRecvTotal = recv;
+				kbpsUp = Math.max(0, Math.round(((sent - prevBytesSent) * 8) / 1000));
+				kbpsDown = Math.max(0, Math.round(((recv - prevBytesRecv) * 8) / 1000));
+				prevBytesSent = sent; prevBytesRecv = recv;
+			} catch (e) { /* ignore */ }
+		}, 1000);
+	}
+
+	function stopStatsPolling() {
+		if (statsTimerId) clearInterval(statsTimerId);
+		statsTimerId = undefined;
+		kbpsUp = 0; kbpsDown = 0;
+	}
+
 	// waveform canvas
 	let canvasEl;
 	let ctx;
@@ -179,6 +307,49 @@
 		a.click();
 	}
 
+	// === STT/LLM/TTS 체인 연동 ===
+	let transcribedText = '';
+	let assistantReply = '';
+	let replyAudioUrl = '';
+
+	async function sendToStt() {
+		if (!recordedBlob) return;
+		const fd = new FormData();
+		fd.append('audio', recordedBlob, 'recording.webm');
+		const r = await fetch('/api/stt', { method: 'POST', body: fd });
+		const data = await r.json();
+		transcribedText = data.text || '';
+	}
+
+	async function askLlm() {
+		if (!transcribedText) return;
+		const r = await fetch('https://api.openai.com/v1/chat/completions', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${import.meta.env.VITE_OPENAI_PROXY_KEY ?? ''}`
+			},
+			body: JSON.stringify({
+				model: 'gpt-4o-mini',
+				messages: [
+					{ role: 'system', content: 'You are an English conversation partner. Keep answers concise.' },
+					{ role: 'user', content: transcribedText }
+				]
+			})
+		});
+		if (!r.ok) { assistantReply = ''; return; }
+		const data = await r.json();
+		assistantReply = data.choices?.[0]?.message?.content ?? '';
+	}
+
+	async function ttsReply() {
+		if (!assistantReply) return;
+		const r = await fetch('/api/tts', { method: 'POST', body: JSON.stringify({ text: assistantReply }) });
+		const buf = await r.arrayBuffer();
+		if (replyAudioUrl) URL.revokeObjectURL(replyAudioUrl);
+		replyAudioUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
+	}
+
 	function fmt(ms) {
 		const sec = Math.floor(ms / 1000);
 		const m = String(Math.floor(sec / 60)).padStart(2, '0');
@@ -223,6 +394,25 @@
 		<div class="wave-wrap">
 			<canvas bind:this={canvasEl} width={canvasWidth * dpr} height={canvasHeight * dpr}></canvas>
 		</div>
+		<div class="rt-controls">
+			{#if !isRealtime}
+				<button class="primary" on:click={startRealtime}>실시간 연결 시작</button>
+			{:else}
+				<button on:click={stopRealtime}>실시간 종료</button>
+			{/if}
+			<audio bind:this={remoteAudioEl} autoplay></audio>
+		</div>
+		<div class="rt-status">
+			<div>연결: {rtState.connection} • ICE: {rtState.ice} • 신호: {rtState.signaling}</div>
+			<div>업/다운 대역폭: {kbpsUp} / {kbpsDown} kbps</div>
+			<div>누적 바이트: ↑ {bytesSentTotal}B, ↓ {bytesRecvTotal}B {#if realtimeClosedAt}(종료: {realtimeClosedAt}){/if}</div>
+			{#if !isRealtime && rtState.connection === 'closed' && kbpsUp === 0 && kbpsDown === 0}
+				<div class="ok">실시간 세션이 완전히 종료되었고 전송이 중단되었습니다.</div>
+			{/if}
+		</div>
+		{#if realtimeError}
+			<p class="error">{realtimeError}</p>
+		{/if}
 	</section>
 
 	{#if isRecording}
@@ -256,15 +446,40 @@
 		<div class="playback">
 			<audio bind:this={audioEl} src={recordedUrl} controls></audio>
 			<div class="playback-actions">
+				<button on:click={sendToStt}>전사(STT)</button>
+				<button on:click={async () => { await sendToStt(); await askLlm(); await ttsReply(); }}>질문→응답(TTS)</button>
 				<button on:click={resetRecording}>다시 녹음</button>
 				<button class="primary" on:click={downloadRecording}>다운로드</button>
 			</div>
+			{#if transcribedText}
+				<p><strong>STT</strong>: {transcribedText}</p>
+			{/if}
+			{#if assistantReply}
+				<p><strong>LLM</strong>: {assistantReply}</p>
+			{/if}
+			{#if replyAudioUrl}
+				<audio src={replyAudioUrl} controls></audio>
+			{/if}
 		</div>
 	{/if}
 
 	{#if errorMessage}
 		<p class="error">{errorMessage}</p>
 	{/if}
+
+	<div class="debug">
+		<button on:click={() => debugOpen = !debugOpen}>{debugOpen ? '디버그 닫기' : '디버그 열기'}</button>
+		{#if debugOpen}
+			<ul class="log">
+				{#each debugLogs as l}
+					<li>
+						<div class="log-head">[{l.time}] {l.step}</div>
+						<pre>{l.message}</pre>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
 </main>
 
 <svelte:window on:resize={ensureCanvas} on:load={ensureCanvas} />
@@ -336,5 +551,12 @@
 	.playback audio { width: 100%; }
 	.playback-actions { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
 	.error { color: #b91c1c; }
+	.ok { color: #15803d; }
+
+	.debug { max-width: 920px; margin: 12px auto; }
+	.log { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+	.log-head { font-weight: 700; color: #334155; }
+	pre { background: #0b1020; color: #e2e8f0; padding: 8px; border-radius: 8px; overflow: auto; }
+	.rt-status { font-size: 12px; color: #334155; display: grid; gap: 4px; margin-top: 8px; }
 
 </style>
