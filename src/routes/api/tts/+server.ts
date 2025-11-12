@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { OPENAI_API_KEY } from '$env/static/private';
+export const config = { runtime: 'nodejs22.x' };
 
 export const POST = async ({ request }) => {
 	try {

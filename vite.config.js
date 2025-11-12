@@ -3,7 +3,14 @@ import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()],
+    plugins: [tailwindcss(), sveltekit()],
+    build: {
+        rollupOptions: {
+            // Workaround for accidental/broken bare import "r.ts" during SSR bundle on Vercel
+            // If some dependency emits it, treat as external to avoid resolution failure
+            external: ['r.ts']
+        }
+    },
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

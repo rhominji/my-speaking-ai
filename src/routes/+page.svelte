@@ -1,4 +1,7 @@
 <script>
+	import { user } from '$lib/auth.js';
+	import { saveConversation } from '$lib/conversation.js';
+
 	let mediaRecorder;
 	let mediaStream;
 	let audioChunks = [];
@@ -311,6 +314,16 @@
 	let transcribedText = '';
 	let assistantReply = '';
 	let replyAudioUrl = '';
+	
+	// 대화 기록 누적 저장
+	let conversationHistory = [];
+	let isSessionActive = false;
+	let currentTab = 'current'; // 'current' or 'history'
+	
+	function startNewSession() {
+		conversationHistory = [];
+		isSessionActive = true;
+	}
 
 	async function sendToStt() {
 		if (!recordedBlob) return;
@@ -340,6 +353,35 @@
 		if (!r.ok) { assistantReply = ''; return; }
 		const data = await r.json();
 		assistantReply = data.choices?.[0]?.message?.content ?? '';
+		
+		// 대화 기록 저장 및 누적
+		if ($user && transcribedText && assistantReply) {
+			await saveConversation($user.id, transcribedText, assistantReply);
+			
+			// 세션이 활성화되어 있지 않으면 자동으로 시작
+			if (!isSessionActive) {
+				isSessionActive = true;
+			}
+			
+			// 로컬 대화 기록에 추가
+			conversationHistory = [
+				...conversationHistory,
+				{
+					userMessage: transcribedText,
+					assistantReply: assistantReply,
+					timestamp: new Date().toISOString()
+				}
+			];
+		}
+	}
+	
+	function formatTime(dateString) {
+		const date = new Date(dateString);
+		return date.toLocaleTimeString('ko-KR', {
+			hour: '2-digit',
+			minute: '2-digit',
+			second: '2-digit'
+		});
 	}
 
 	async function ttsReply() {
@@ -380,28 +422,36 @@
 
 <main class="container">
 	<header class="header">
-		<h1>🎙️ 음성 녹음기</h1>
-		<p class="subtitle">목소리를 녹음하고 확인해보세요</p>
+		<h1>🎙️ 실시간 영어회화 AI</h1>
+		<p class="subtitle">openai Realtime API로 실시간 영어회화 AI 서비스를 제공합니다.</p>
 	</header>
 
-	<section class="recorder-card">
-		<div class="mic-badge" aria-hidden="true">
-			<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-				<path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Z" fill="#334155"/>
-				<path d="M5 11a1 1 0 1 0-2 0 9 9 0 0 0 8 8v3h2v-3a9 9 0 0 0 8-8 1 1 0 1 0-2 0 7 7 0 0 1-14 0Z" fill="#334155"/>
-			</svg>
+	<!-- 세션 상태 및 새 세션 시작 -->
+	<div class="session-controls">
+		<div class="session-status">
+			<span class="status-indicator {isSessionActive ? 'active' : 'inactive'}"></span>
+			<span class="status-text">{isSessionActive ? '세션 활성' : '세션 비활성'}</span>
 		</div>
-		<div class="wave-wrap">
-			<canvas bind:this={canvasEl} width={canvasWidth * dpr} height={canvasHeight * dpr}></canvas>
-		</div>
-		<div class="rt-controls">
-			{#if !isRealtime}
-				<button class="primary" on:click={startRealtime}>실시간 연결 시작</button>
-			{:else}
-				<button on:click={stopRealtime}>실시간 종료</button>
+		<button class="new-session-btn" on:click={startNewSession}>새 세션 시작</button>
+	</div>
+
+	<!-- 녹음 아이콘 -->
+	<div class="recording-section">
+		<div class="mic-icon-wrapper">
+			<div class="mic-icon {isRecording ? 'recording' : ''}">
+				<svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+					<path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Z" fill="currentColor"/>
+					<path d="M5 11a1 1 0 1 0-2 0 9 9 0 0 0 8 8v3h2v-3a9 9 0 0 0 8-8 1 1 0 1 0-2 0 7 7 0 0 1-14 0Z" fill="currentColor"/>
+				</svg>
+			</div>
+			{#if isRecording}
+				<div class="recording-status">녹음 중... {fmt(elapsedMs)}</div>
 			{/if}
-			<audio bind:this={remoteAudioEl} autoplay></audio>
 		</div>
+	</div>
+
+	<!-- 연결 여부 -->
+	<div class="connection-status">
 		<div class="rt-status">
 			<div>연결: {rtState.connection} • ICE: {rtState.ice} • 신호: {rtState.signaling}</div>
 			<div>업/다운 대역폭: {kbpsUp} / {kbpsDown} kbps</div>
@@ -413,63 +463,27 @@
 		{#if realtimeError}
 			<p class="error">{realtimeError}</p>
 		{/if}
-	</section>
-
-	{#if isRecording}
-		<div class="status-pill danger">
-			<span class="dot"></span>
-			<span>녹음 중... {fmt(elapsedMs)}</span>
-		</div>
-	{:else}
-		{#if recordedUrl}
-			<div class="status-pill neutral">
-				<span>완료 • {fmt(elapsedMs)}</span>
-			</div>
-		{/if}
-	{/if}
-
-	<div class="cta">
-		{#if !isRecording}
-			<button class="cta-btn" on:click={async () => { await ensureMic(); startRecording(); ensureCanvas(); }}>
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7-11-7z"/></svg>
-				<span>녹음 시작</span>
-			</button>
-		{:else}
-			<button class="cta-btn dark" on:click={stopRecording}>
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-				<span>녹음 중지</span>
-			</button>
-		{/if}
 	</div>
 
-	{#if recordedUrl}
-		<div class="playback">
-			<audio bind:this={audioEl} src={recordedUrl} controls></audio>
-			<div class="playback-actions">
-				<button on:click={sendToStt}>전사(STT)</button>
-				<button on:click={async () => { await sendToStt(); await askLlm(); await ttsReply(); }}>질문→응답(TTS)</button>
-				<button on:click={resetRecording}>다시 녹음</button>
-				<button class="primary" on:click={downloadRecording}>다운로드</button>
-			</div>
-			{#if transcribedText}
-				<p><strong>STT</strong>: {transcribedText}</p>
-			{/if}
-			{#if assistantReply}
-				<p><strong>LLM</strong>: {assistantReply}</p>
-			{/if}
-			{#if replyAudioUrl}
-				<audio src={replyAudioUrl} controls></audio>
-			{/if}
-		</div>
-	{/if}
+	<!-- AI 대화 시작 버튼과 디버그 버튼 -->
+	<div class="action-buttons">
+		{#if !isRecording}
+			<button class="ai-chat-btn" on:click={async () => { await ensureMic(); startRecording(); ensureCanvas(); }}>
+				AI 대화 시작
+			</button>
+		{:else}
+			<button class="ai-chat-btn stop-btn" on:click={stopRecording}>
+				녹음 중지
+			</button>
+		{/if}
+		<button class="debug-btn" on:click={() => debugOpen = !debugOpen}>
+			{debugOpen ? '디버그 닫기' : '디버그 열기'}
+		</button>
+	</div>
 
-	{#if errorMessage}
-		<p class="error">{errorMessage}</p>
-	{/if}
-
-	<div class="debug">
-		<button on:click={() => debugOpen = !debugOpen}>{debugOpen ? '디버그 닫기' : '디버그 열기'}</button>
-		{#if debugOpen}
+	<!-- 디버그 패널 -->
+	{#if debugOpen}
+		<div class="debug-panel">
 			<ul class="log">
 				{#each debugLogs as l}
 					<li>
@@ -478,8 +492,95 @@
 					</li>
 				{/each}
 			</ul>
+		</div>
+	{/if}
+
+	<!-- 탭 -->
+	<div class="tabs">
+		<button class="tab-btn {currentTab === 'current' ? 'active' : ''}" on:click={() => currentTab = 'current'}>
+			현재 대화
+		</button>
+		<button class="tab-btn {currentTab === 'history' ? 'active' : ''}" on:click={() => currentTab = 'history'}>
+			대화 기록
+		</button>
+	</div>
+
+	<!-- 탭 컨텐츠 -->
+	<div class="tab-content">
+		{#if currentTab === 'current'}
+			<!-- 현재 대화 탭 -->
+			<div class="current-conversation">
+				{#if recordedUrl}
+					<div class="playback">
+						<audio bind:this={audioEl} src={recordedUrl} controls></audio>
+						<div class="playback-actions">
+							<button on:click={sendToStt}>전사(STT)</button>
+							<button on:click={async () => { await sendToStt(); await askLlm(); await ttsReply(); }}>질문→응답(TTS)</button>
+							<button on:click={resetRecording}>다시 녹음</button>
+							<button class="primary" on:click={downloadRecording}>다운로드</button>
+						</div>
+						{#if replyAudioUrl}
+							<audio src={replyAudioUrl} controls style="margin-top: 12px;"></audio>
+						{/if}
+					</div>
+				{/if}
+				
+				{#if conversationHistory.length > 0}
+					<div class="conversation-list">
+						{#each conversationHistory as conversation (conversation.timestamp)}
+							<div class="conversation-item">
+								<div class="conversation-time">{formatTime(conversation.timestamp)}</div>
+								<div class="user-message">
+									<div class="message-label">나</div>
+									<div class="message-content">{conversation.userMessage}</div>
+								</div>
+								<div class="assistant-message">
+									<div class="message-label">AI</div>
+									<div class="message-content">{conversation.assistantReply}</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<div class="empty-state">
+						<p>아직 대화가 없습니다. AI 대화 시작 버튼을 눌러 대화를 시작하세요.</p>
+					</div>
+				{/if}
+			</div>
+		{:else}
+			<!-- 대화 기록 탭 -->
+			<div class="history-tab">
+				{#if conversationHistory.length > 0}
+					<div class="conversation-list">
+						{#each conversationHistory as conversation (conversation.timestamp)}
+							<div class="conversation-item">
+								<div class="conversation-time">{formatTime(conversation.timestamp)}</div>
+								<div class="user-message">
+									<div class="message-label">나</div>
+									<div class="message-content">{conversation.userMessage}</div>
+								</div>
+								<div class="assistant-message">
+									<div class="message-label">AI</div>
+									<div class="message-content">{conversation.assistantReply}</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<div class="empty-state">
+						<p>저장된 대화 기록이 없습니다.</p>
+					</div>
+				{/if}
+			</div>
 		{/if}
 	</div>
+
+	<!-- 숨겨진 오디오 요소 -->
+	<audio bind:this={remoteAudioEl} autoplay style="display: none;"></audio>
+
+	{#if errorMessage}
+		<p class="error">{errorMessage}</p>
+	{/if}
 </main>
 
 <svelte:window on:resize={ensureCanvas} on:load={ensureCanvas} />
@@ -490,73 +591,407 @@
 		padding: 40px 16px;
 		background: radial-gradient(1200px 600px at 20% -10%, #e8f0ff, transparent),
 			radial-gradient(1200px 600px at 120% 110%, #e8f0ff, transparent);
+		max-width: 900px;
+		margin: 0 auto;
 	}
-	.header { text-align: center; margin-bottom: 20px; }
-	.header h1 { font-size: 32px; margin: 0 0 6px; color: #0f172a; }
-	.subtitle { color: #475569; margin: 0; }
-	.recorder-card {
+
+	.header {
+		text-align: center;
+		margin-bottom: 24px;
+	}
+
+	.header h1 {
+		font-size: 32px;
+		margin: 0 0 6px;
+		color: #0f172a;
+	}
+
+	.subtitle {
+		color: #475569;
+		margin: 0;
+	}
+
+	/* 세션 컨트롤 */
+	.session-controls {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
 		max-width: 720px;
-		margin: 24px auto;
+		margin: 0 auto 24px;
 		padding: 16px;
+		background: white;
 		border: 1px solid #e5e7eb;
 		border-radius: 12px;
-		background: #ffffff;
-		box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-	}
-	.mic-badge {
-		width: 64px; height: 64px;
-		border-radius: 999px;
-		background: #e5e7eb;
-		display: flex; align-items: center; justify-content: center;
-		margin: 8px auto 16px;
-	}
-	.wave-wrap {
-		max-width: 560px; margin: 0 auto; padding: 12px; border-radius: 12px;
-		background: #eef2ff; border: 1px solid #e5e7eb;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 	}
 
-	.status-pill {
-		margin: 16px auto 0; padding: 10px 16px; border-radius: 999px;
-		display: inline-flex; align-items: center; gap: 8px; font-weight: 600;
+	.session-status {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
-	.status-pill .dot { width: 8px; height: 8px; border-radius: 999px; background: currentColor; display: inline-block; }
-	.status-pill.danger { background: #fee2e2; color: #b91c1c; }
-	.status-pill.neutral { background: #e5e7eb; color: #334155; }
 
-	button {
-		appearance: none;
-		border: 1px solid #d1d5db;
-		background: #f9fafb;
-		padding: 8px 12px;
+	.status-indicator {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		display: inline-block;
+	}
+
+	.status-indicator.active {
+		background: #10b981;
+		box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+	}
+
+	.status-indicator.inactive {
+		background: #94a3b8;
+	}
+
+	.status-text {
+		font-size: 14px;
+		font-weight: 600;
+		color: #334155;
+	}
+
+	.new-session-btn {
+		padding: 8px 16px;
+		background: #2563eb;
+		color: white;
+		border: none;
 		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 600;
 		cursor: pointer;
+		transition: background 0.2s;
+	}
+
+	.new-session-btn:hover {
+		background: #1d4ed8;
+	}
+
+	/* 녹음 섹션 */
+	.recording-section {
+		display: flex;
+		justify-content: center;
+		margin-bottom: 24px;
+	}
+
+	.mic-icon-wrapper {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.mic-icon {
+		width: 80px;
+		height: 80px;
+		border-radius: 50%;
+		background: #e5e7eb;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #64748b;
+		transition: all 0.3s;
+	}
+
+	.mic-icon.recording {
+		background: #fee2e2;
+		color: #b91c1c;
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { transform: scale(1); }
+		50% { transform: scale(1.1); }
+	}
+
+	.recording-status {
+		font-size: 14px;
+		font-weight: 600;
+		color: #b91c1c;
+	}
+
+	/* 연결 상태 */
+	.connection-status {
+		max-width: 720px;
+		margin: 0 auto 24px;
+		padding: 16px;
+		background: white;
+		border: 1px solid #e5e7eb;
+		border-radius: 12px;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+	}
+
+	.rt-status {
+		font-size: 12px;
+		color: #334155;
+		display: grid;
+		gap: 4px;
+	}
+
+	.rt-status .ok {
+		color: #15803d;
+		margin-top: 8px;
+	}
+
+	.error {
+		color: #b91c1c;
+		margin-top: 8px;
 		font-size: 14px;
 	}
-	button:hover { background: #f3f4f6; }
-	button:disabled { opacity: 0.6; cursor: not-allowed; }
-	button.primary {
-		background: #2563eb;
-		border-color: #2563eb;
+
+	/* 액션 버튼 */
+	.action-buttons {
+		display: flex;
+		justify-content: center;
+		gap: 12px;
+		margin-bottom: 24px;
+	}
+
+	.ai-chat-btn {
+		padding: 12px 24px;
+		background: #0f172a;
 		color: white;
+		border: none;
+		border-radius: 8px;
+		font-size: 16px;
+		font-weight: 700;
+		cursor: pointer;
+		transition: background 0.2s;
 	}
-	button.primary:hover { background: #1d4ed8; }
-	.cta { display: flex; justify-content: center; margin: 20px 0 8px; }
-	.cta-btn {
-		border: none; background: #0f172a; color: #fff; font-size: 16px; font-weight: 700;
-		padding: 16px 28px; border-radius: 999px; display: inline-flex; align-items: center; gap: 10px;
-		box-shadow: 0 8px 24px rgba(15,23,42,0.15);
+
+	.ai-chat-btn:hover {
+		background: #1e293b;
 	}
-	.cta-btn.dark { background: #0f172a; }
-	.playback { max-width: 720px; margin: 8px auto 0; text-align: center; }
-	.playback audio { width: 100%; }
-	.playback-actions { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
-	.error { color: #b91c1c; }
-	.ok { color: #15803d; }
 
-	.debug { max-width: 920px; margin: 12px auto; }
-	.log { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
-	.log-head { font-weight: 700; color: #334155; }
-	pre { background: #0b1020; color: #e2e8f0; padding: 8px; border-radius: 8px; overflow: auto; }
-	.rt-status { font-size: 12px; color: #334155; display: grid; gap: 4px; margin-top: 8px; }
+	.ai-chat-btn.stop-btn {
+		background: #b91c1c;
+	}
 
+	.ai-chat-btn.stop-btn:hover {
+		background: #991b1b;
+	}
+
+	.debug-btn {
+		padding: 12px 24px;
+		background: #f9fafb;
+		color: #334155;
+		border: 1px solid #d1d5db;
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.2s;
+	}
+
+	.debug-btn:hover {
+		background: #f3f4f6;
+	}
+
+	/* 디버그 패널 */
+	.debug-panel {
+		max-width: 920px;
+		margin: 0 auto 24px;
+		padding: 16px;
+		background: #0b1020;
+		border-radius: 12px;
+		max-height: 400px;
+		overflow-y: auto;
+	}
+
+	.log {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: grid;
+		gap: 8px;
+	}
+
+	.log-head {
+		font-weight: 700;
+		color: #e2e8f0;
+		margin-bottom: 4px;
+	}
+
+	pre {
+		background: #1e293b;
+		color: #e2e8f0;
+		padding: 8px;
+		border-radius: 8px;
+		overflow: auto;
+		font-size: 12px;
+	}
+
+	/* 탭 */
+	.tabs {
+		display: flex;
+		justify-content: center;
+		gap: 8px;
+		margin-bottom: 24px;
+		max-width: 720px;
+		margin-left: auto;
+		margin-right: auto;
+	}
+
+	.tab-btn {
+		flex: 1;
+		padding: 12px 24px;
+		background: white;
+		color: #64748b;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px 8px 0 0;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.tab-btn.active {
+		background: #f9fafb;
+		color: #0f172a;
+		border-bottom-color: transparent;
+	}
+
+	.tab-btn:hover:not(.active) {
+		background: #f3f4f6;
+	}
+
+	/* 탭 컨텐츠 */
+	.tab-content {
+		max-width: 720px;
+		margin: 0 auto;
+		padding: 24px;
+		background: white;
+		border: 1px solid #e5e7eb;
+		border-radius: 0 0 12px 12px;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+		min-height: 400px;
+		max-height: 600px;
+		overflow-y: auto;
+	}
+
+	.playback {
+		margin-bottom: 24px;
+		text-align: center;
+	}
+
+	.playback audio {
+		width: 100%;
+		margin-bottom: 12px;
+	}
+
+	.playback-actions {
+		display: flex;
+		gap: 8px;
+		justify-content: center;
+		flex-wrap: wrap;
+	}
+
+	.playback-actions button {
+		padding: 8px 12px;
+		background: #f9fafb;
+		border: 1px solid #d1d5db;
+		border-radius: 8px;
+		font-size: 14px;
+		cursor: pointer;
+		transition: background 0.2s;
+	}
+
+	.playback-actions button:hover {
+		background: #f3f4f6;
+	}
+
+	.playback-actions button.primary {
+		background: #2563eb;
+		color: white;
+		border-color: #2563eb;
+	}
+
+	.playback-actions button.primary:hover {
+		background: #1d4ed8;
+	}
+
+	/* 대화 목록 */
+	.conversation-list {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+
+	.conversation-item {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding-bottom: 20px;
+		border-bottom: 1px solid #f1f5f9;
+	}
+
+	.conversation-item:last-child {
+		border-bottom: none;
+		padding-bottom: 0;
+	}
+
+	.conversation-time {
+		font-size: 12px;
+		color: #94a3b8;
+		font-weight: 600;
+		margin-bottom: 4px;
+	}
+
+	.user-message,
+	.assistant-message {
+		display: flex;
+		gap: 12px;
+		align-items: flex-start;
+	}
+
+	.message-label {
+		font-weight: 700;
+		font-size: 12px;
+		padding: 6px 10px;
+		border-radius: 6px;
+		white-space: nowrap;
+		min-width: 40px;
+		text-align: center;
+	}
+
+	.user-message .message-label {
+		background: #dbeafe;
+		color: #1e40af;
+	}
+
+	.assistant-message .message-label {
+		background: #f3e8ff;
+		color: #6b21a8;
+	}
+
+	.message-content {
+		flex: 1;
+		padding: 12px 16px;
+		border-radius: 8px;
+		color: #334155;
+		line-height: 1.6;
+		word-wrap: break-word;
+	}
+
+	.user-message .message-content {
+		background: #eff6ff;
+	}
+
+	.assistant-message .message-content {
+		background: #faf5ff;
+	}
+
+	/* 빈 상태 */
+	.empty-state {
+		text-align: center;
+		padding: 60px 20px;
+		color: #64748b;
+	}
+
+	.empty-state p {
+		margin: 0;
+		font-size: 14px;
+	}
 </style>

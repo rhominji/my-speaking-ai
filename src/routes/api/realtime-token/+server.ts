@@ -1,4 +1,5 @@
 import { OPENAI_API_KEY } from '$env/static/private';
+
 // Issues a client secret (ephemeral) for Realtime/WebRTC or WebSocket
 export const POST = async () => {
 	try {
