@@ -99,7 +99,12 @@
 								{#if record.assistant_reply}
 									<div class="assistant-message">
 										<div class="message-label">AI</div>
-										<div class="message-content">{record.assistant_reply}</div>
+										<div class="message-content">
+											{#if record.personality_name}
+												<div class="personality-badge">{record.personality_name}</div>
+											{/if}
+											{record.assistant_reply}
+										</div>
 									</div>
 								{/if}
 								<div class="message-time">
@@ -299,6 +304,17 @@
 
 	.assistant-message .message-content {
 		background: #faf5ff;
+	}
+
+	.personality-badge {
+		display: inline-block;
+		padding: 4px 8px;
+		background: rgba(37, 99, 235, 0.1);
+		color: #2563eb;
+		border-radius: 4px;
+		font-size: 11px;
+		font-weight: 600;
+		margin-bottom: 8px;
 	}
 
 	.message-time {

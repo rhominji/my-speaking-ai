@@ -25,7 +25,7 @@ export async function ensureUserProfile(userId, email) {
 }
 
 // 대화 기록 저장
-export async function saveConversation(userId, userMessage, assistantReply) {
+export async function saveConversation(userId, userMessage, assistantReply, personalityInfo = null) {
 	try {
 		// 먼저 사용자 프로필 확인
 		const { data: userData } = await supabase
@@ -42,13 +42,23 @@ export async function saveConversation(userId, userMessage, assistantReply) {
 			}
 		}
 
+		const recordData = {
+			user_id: userId,
+			user_message: userMessage,
+			assistant_reply: assistantReply
+		};
+
+		// AI 설정 정보가 있으면 추가
+		if (personalityInfo) {
+			recordData.personality_type = personalityInfo.type || null;
+			recordData.personality_key = personalityInfo.key || null;
+			recordData.personality_name = personalityInfo.name || null;
+			recordData.system_prompt = personalityInfo.prompt || null;
+		}
+
 		const { data, error } = await supabase
 			.from('conversation_records')
-			.insert({
-				user_id: userId,
-				user_message: userMessage,
-				assistant_reply: assistantReply
-			})
+			.insert(recordData)
 			.select()
 			.single();
 

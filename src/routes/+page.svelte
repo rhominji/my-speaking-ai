@@ -319,10 +319,69 @@
 	let conversationHistory = [];
 	let isSessionActive = false;
 	let currentTab = 'current'; // 'current' or 'history'
+	let chatMessagesContainer;
+	
+	// 시스템 프롬프트 설정
+	let systemPrompt = 'You are an English conversation partner. Keep answers concise.';
+	let showPromptEditor = false;
+	let promptMode = 'preset'; // 'preset' or 'custom'
+	let selectedPersonality = 'friendly'; // 기본값
+	
+	// 미리 정의된 선생님 성격
+	const personalityPresets = {
+		friendly: {
+			name: '친근한 선생님',
+			description: '따뜻하고 친근하게 대화하며 격려를 아끼지 않습니다.',
+			prompt: 'You are a friendly and warm English teacher. You encourage students warmly and provide positive feedback. Keep answers concise but supportive.'
+		},
+		strict: {
+			name: '엄격한 선생님',
+			description: '정확한 문법과 발음을 강조하며 실수를 바로잡아줍니다.',
+			prompt: 'You are a strict but fair English teacher. You emphasize correct grammar and pronunciation, and correct mistakes directly. Keep answers concise and focused on accuracy.'
+		},
+		humorous: {
+			name: '유머러스한 선생님',
+			description: '재미있고 유쾌하게 대화하며 학습을 즐겁게 만듭니다.',
+			prompt: 'You are a humorous and fun English teacher. You make learning enjoyable with jokes and light-hearted conversation. Keep answers concise and entertaining.'
+		},
+		patient: {
+			name: '인내심 있는 선생님',
+			description: '천천히 설명하고 반복하여 이해를 돕습니다.',
+			prompt: 'You are a patient English teacher. You explain things slowly and clearly, and are willing to repeat explanations. Keep answers concise but thorough.'
+		},
+		professional: {
+			name: '전문적인 선생님',
+			description: '비즈니스 영어와 공식적인 표현에 특화되어 있습니다.',
+			prompt: 'You are a professional English teacher specializing in business English and formal expressions. You focus on professional communication skills. Keep answers concise and business-appropriate.'
+		}
+	};
+	
+	function updatePromptFromPersonality() {
+		if (promptMode === 'preset' && personalityPresets[selectedPersonality]) {
+			systemPrompt = personalityPresets[selectedPersonality].prompt;
+		}
+	}
+	
+	function switchToCustom() {
+		promptMode = 'custom';
+	}
 	
 	function startNewSession() {
 		conversationHistory = [];
 		isSessionActive = true;
+	}
+	
+	// 편집기 열릴 때 기본값 설정
+	$: if (showPromptEditor && promptMode === 'preset') {
+		updatePromptFromPersonality();
+	}
+	
+	function scrollToBottom() {
+		if (chatMessagesContainer) {
+			setTimeout(() => {
+				chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+			}, 100);
+		}
 	}
 
 	async function sendToStt() {
@@ -345,7 +404,7 @@
 			body: JSON.stringify({
 				model: 'gpt-4o-mini',
 				messages: [
-					{ role: 'system', content: 'You are an English conversation partner. Keep answers concise.' },
+					{ role: 'system', content: systemPrompt },
 					{ role: 'user', content: transcribedText }
 				]
 			})
@@ -356,7 +415,25 @@
 		
 		// 대화 기록 저장 및 누적
 		if ($user && transcribedText && assistantReply) {
-			await saveConversation($user.id, transcribedText, assistantReply);
+			// AI 설정 정보 준비
+			let personalityInfo = null;
+			if (promptMode === 'preset' && personalityPresets[selectedPersonality]) {
+				personalityInfo = {
+					type: 'preset',
+					key: selectedPersonality,
+					name: personalityPresets[selectedPersonality].name,
+					prompt: systemPrompt
+				};
+			} else if (promptMode === 'custom') {
+				personalityInfo = {
+					type: 'custom',
+					key: null,
+					name: '커스텀 설정',
+					prompt: systemPrompt
+				};
+			}
+			
+			await saveConversation($user.id, transcribedText, assistantReply, personalityInfo);
 			
 			// 세션이 활성화되어 있지 않으면 자동으로 시작
 			if (!isSessionActive) {
@@ -369,9 +446,13 @@
 				{
 					userMessage: transcribedText,
 					assistantReply: assistantReply,
-					timestamp: new Date().toISOString()
+					timestamp: new Date().toISOString(),
+					personalityName: personalityInfo?.name || '기본 설정'
 				}
 			];
+			
+			// 새 메시지 추가 시 스크롤
+			scrollToBottom();
 		}
 	}
 	
@@ -432,8 +513,85 @@
 			<span class="status-indicator {isSessionActive ? 'active' : 'inactive'}"></span>
 			<span class="status-text">{isSessionActive ? '세션 활성' : '세션 비활성'}</span>
 		</div>
-		<button class="new-session-btn" on:click={startNewSession}>새 세션 시작</button>
+		<div class="session-actions">
+			<button class="prompt-edit-btn" on:click={() => showPromptEditor = !showPromptEditor}>
+				{showPromptEditor ? '프롬프트 숨기기' : ' AI 선생님 설정 편집 '}
+			</button>
+			<button class="new-session-btn" on:click={startNewSession}>새 세션 시작</button>
+		</div>
 	</div>
+
+	<!-- 시스템 프롬프트 설정 편집 -->
+	{#if showPromptEditor}
+		<div class="prompt-editor">
+			<h3 class="prompt-editor-title">AI 선생님 성격 설정</h3>
+			
+			<!-- 모드 선택 -->
+			<div class="prompt-mode-selector">
+				<button 
+					class="mode-btn {promptMode === 'preset' ? 'active' : ''}"
+					on:click={() => { promptMode = 'preset'; updatePromptFromPersonality(); }}
+				>
+					미리 정의된 성격
+				</button>
+				<button 
+					class="mode-btn {promptMode === 'custom' ? 'active' : ''}"
+					on:click={() => promptMode = 'custom'}
+				>
+					커스텀 설정
+				</button>
+			</div>
+
+			{#if promptMode === 'preset'}
+				<!-- 미리 정의된 성격 선택 -->
+				<div class="personality-selector">
+					<div class="prompt-label">선생님 성격 선택</div>
+					<div class="personality-grid">
+						{#each Object.entries(personalityPresets) as [key, preset]}
+							<button
+								class="personality-card {selectedPersonality === key ? 'selected' : ''}"
+								on:click={() => { selectedPersonality = key; updatePromptFromPersonality(); }}
+							>
+								<div class="personality-name">{preset.name}</div>
+								<div class="personality-description">{preset.description}</div>
+							</button>
+						{/each}
+					</div>
+					<div class="current-prompt-preview">
+						<div class="prompt-label">현재 프롬프트 미리보기</div>
+						<div class="prompt-preview-text">{systemPrompt}</div>
+					</div>
+				</div>
+			{:else}
+				<!-- 커스텀 프롬프트 편집 -->
+				<div class="custom-prompt-editor">
+					<label for="system-prompt-input" class="prompt-label">
+						커스텀 시스템 프롬프트 (AI의 역할과 응답 스타일을 직접 설정합니다)
+					</label>
+					<textarea
+						id="system-prompt-input"
+						class="prompt-textarea"
+						bind:value={systemPrompt}
+						placeholder="예: You are an English conversation partner. Keep answers concise."
+						rows="4"
+					></textarea>
+				</div>
+			{/if}
+
+			<div class="prompt-actions">
+				<button class="prompt-reset-btn" on:click={() => { 
+					selectedPersonality = 'friendly';
+					promptMode = 'preset';
+					updatePromptFromPersonality();
+				}}>
+					기본값으로 복원
+				</button>
+				<button class="prompt-save-btn" on:click={() => showPromptEditor = false}>
+					저장
+				</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- 녹음 아이콘 -->
 	<div class="recording-section">
@@ -509,7 +667,7 @@
 	<div class="tab-content">
 		{#if currentTab === 'current'}
 			<!-- 현재 대화 탭 -->
-			<div class="current-conversation">
+			<div class="current-conversation chat-style">
 				{#if recordedUrl}
 					<div class="playback">
 						<audio bind:this={audioEl} src={recordedUrl} controls></audio>
@@ -526,17 +684,23 @@
 				{/if}
 				
 				{#if conversationHistory.length > 0}
-					<div class="conversation-list">
+					<div class="chat-messages" bind:this={chatMessagesContainer}>
 						{#each conversationHistory as conversation (conversation.timestamp)}
-							<div class="conversation-item">
-								<div class="conversation-time">{formatTime(conversation.timestamp)}</div>
-								<div class="user-message">
-									<div class="message-label">나</div>
-									<div class="message-content">{conversation.userMessage}</div>
+							<!-- 사용자 메시지 -->
+							<div class="chat-message user-message-bubble">
+								<div class="bubble-content">
+									<div class="bubble-text">{conversation.userMessage}</div>
+									<div class="bubble-time">{formatTime(conversation.timestamp)}</div>
 								</div>
-								<div class="assistant-message">
-									<div class="message-label">AI</div>
-									<div class="message-content">{conversation.assistantReply}</div>
+							</div>
+							<!-- AI 메시지 -->
+							<div class="chat-message ai-message-bubble">
+								<div class="bubble-content">
+									{#if conversation.personalityName}
+										<div class="personality-badge">{conversation.personalityName}</div>
+									{/if}
+									<div class="bubble-text">{conversation.assistantReply}</div>
+									<div class="bubble-time">{formatTime(conversation.timestamp)}</div>
 								</div>
 							</div>
 						{/each}
@@ -561,7 +725,12 @@
 								</div>
 								<div class="assistant-message">
 									<div class="message-label">AI</div>
-									<div class="message-content">{conversation.assistantReply}</div>
+									<div class="message-content">
+										{#if conversation.personalityName}
+											<div class="personality-badge">{conversation.personalityName}</div>
+										{/if}
+										{conversation.assistantReply}
+									</div>
 								</div>
 							</div>
 						{/each}
@@ -631,6 +800,12 @@
 		gap: 8px;
 	}
 
+	.session-actions {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+
 	.status-indicator {
 		width: 12px;
 		height: 12px;
@@ -666,6 +841,213 @@
 	}
 
 	.new-session-btn:hover {
+		background: #1d4ed8;
+	}
+
+	.prompt-edit-btn {
+		padding: 8px 16px;
+		background: #f9fafb;
+		color: #334155;
+		border: 1px solid #d1d5db;
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.2s;
+	}
+
+	.prompt-edit-btn:hover {
+		background: #f3f4f6;
+	}
+
+	/* 프롬프트 편집기 */
+	.prompt-editor {
+		max-width: 720px;
+		margin: 0 auto 24px;
+		padding: 24px;
+		background: white;
+		border: 1px solid #e5e7eb;
+		border-radius: 12px;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+	}
+
+	.prompt-editor-title {
+		font-size: 18px;
+		font-weight: 700;
+		color: #0f172a;
+		margin: 0 0 20px 0;
+	}
+
+	/* 모드 선택 버튼 */
+	.prompt-mode-selector {
+		display: flex;
+		gap: 8px;
+		margin-bottom: 24px;
+		border-bottom: 1px solid #e5e7eb;
+		padding-bottom: 16px;
+	}
+
+	.mode-btn {
+		flex: 1;
+		padding: 10px 16px;
+		background: #f9fafb;
+		color: #64748b;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.mode-btn.active {
+		background: #2563eb;
+		color: white;
+		border-color: #2563eb;
+	}
+
+	.mode-btn:hover:not(.active) {
+		background: #f3f4f6;
+		color: #334155;
+	}
+
+	/* 성격 선택 그리드 */
+	.personality-selector {
+		margin-bottom: 20px;
+	}
+
+	.personality-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+		gap: 12px;
+		margin-top: 12px;
+	}
+
+	.personality-card {
+		padding: 16px;
+		background: #f9fafb;
+		border: 2px solid #e5e7eb;
+		border-radius: 12px;
+		cursor: pointer;
+		transition: all 0.2s;
+		text-align: left;
+	}
+
+	.personality-card:hover {
+		background: #f3f4f6;
+		border-color: #cbd5e1;
+		transform: translateY(-2px);
+		box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+	}
+
+	.personality-card.selected {
+		background: #eff6ff;
+		border-color: #2563eb;
+		box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+	}
+
+	.personality-name {
+		font-size: 16px;
+		font-weight: 700;
+		color: #0f172a;
+		margin-bottom: 6px;
+	}
+
+	.personality-description {
+		font-size: 13px;
+		color: #64748b;
+		line-height: 1.5;
+	}
+
+	/* 프롬프트 미리보기 */
+	.current-prompt-preview {
+		margin-top: 20px;
+		padding: 16px;
+		background: #f9fafb;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+	}
+
+	.prompt-preview-text {
+		font-size: 13px;
+		color: #334155;
+		line-height: 1.6;
+		margin-top: 8px;
+		padding: 12px;
+		background: white;
+		border-radius: 6px;
+		font-family: 'Courier New', monospace;
+		white-space: pre-wrap;
+		word-wrap: break-word;
+	}
+
+	.prompt-label {
+		display: block;
+		font-size: 14px;
+		font-weight: 600;
+		color: #334155;
+		margin-bottom: 8px;
+	}
+
+	.prompt-textarea {
+		width: 100%;
+		padding: 12px;
+		border: 1px solid #d1d5db;
+		border-radius: 8px;
+		font-size: 14px;
+		font-family: inherit;
+		resize: vertical;
+		min-height: 80px;
+		line-height: 1.5;
+		color: #0f172a;
+		background: #f9fafb;
+		transition: border-color 0.2s, background 0.2s;
+	}
+
+	.prompt-textarea:focus {
+		outline: none;
+		border-color: #2563eb;
+		background: white;
+		box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+	}
+
+	.prompt-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 12px;
+	}
+
+	.prompt-reset-btn {
+		padding: 8px 16px;
+		background: #f9fafb;
+		color: #64748b;
+		border: 1px solid #d1d5db;
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.2s;
+	}
+
+	.prompt-reset-btn:hover {
+		background: #f3f4f6;
+		color: #334155;
+	}
+
+	.prompt-save-btn {
+		padding: 8px 16px;
+		background: #2563eb;
+		color: white;
+		border: none;
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.2s;
+	}
+
+	.prompt-save-btn:hover {
 		background: #1d4ed8;
 	}
 
@@ -981,6 +1363,96 @@
 
 	.assistant-message .message-content {
 		background: #faf5ff;
+	}
+
+	/* 챗봇 스타일 말풍선 */
+	.chat-style {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.chat-messages {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		padding: 16px 0;
+		overflow-y: auto;
+		flex: 1;
+	}
+
+	.chat-message {
+		display: flex;
+		margin-bottom: 4px;
+		animation: fadeIn 0.3s ease-in;
+	}
+
+	@keyframes fadeIn {
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	.user-message-bubble {
+		justify-content: flex-end;
+	}
+
+	.user-message-bubble .bubble-content {
+		max-width: 70%;
+		background: #2563eb;
+		color: white;
+		border-radius: 18px 18px 4px 18px;
+		padding: 12px 16px;
+		position: relative;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+	}
+
+	.ai-message-bubble {
+		justify-content: flex-start;
+	}
+
+	.ai-message-bubble .bubble-content {
+		max-width: 70%;
+		background: #f1f5f9;
+		color: #0f172a;
+		border-radius: 18px 18px 18px 4px;
+		padding: 12px 16px;
+		position: relative;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+	}
+
+	.bubble-text {
+		font-size: 14px;
+		line-height: 1.5;
+		word-wrap: break-word;
+		margin-bottom: 4px;
+	}
+
+	.bubble-time {
+		font-size: 11px;
+		opacity: 0.7;
+		margin-top: 4px;
+		text-align: right;
+	}
+
+	.ai-message-bubble .bubble-time {
+		text-align: left;
+	}
+
+	.personality-badge {
+		display: inline-block;
+		padding: 4px 8px;
+		background: rgba(37, 99, 235, 0.1);
+		color: #2563eb;
+		border-radius: 4px;
+		font-size: 11px;
+		font-weight: 600;
+		margin-bottom: 8px;
 	}
 
 	/* 빈 상태 */
